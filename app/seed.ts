@@ -7,9 +7,20 @@ export function initial(): EstateState {
     name: 'My estate',
     planVersion: PLAN_VERSION,
     plots: planPlots.map(({ id, marla, dimensions, note }) => ({
-      id, marla, dimensions, area: 0, status: 'Unverified', verified: false,
-      price: 0, buyer: '', notes: [PLAN_IMPORT_NOTE, note].filter(Boolean).join(' '),
+      id,
+      marla,
+      dimensions,
+      area: 0,
+      status: 'Unverified',
+      verified: false,
+      price: 0,
+      buyer: '',
+      notes: [PLAN_IMPORT_NOTE, note].filter(Boolean).join(' '),
     })),
-    buyers: [], payments: [], expenses: [], schedule: [], audit: [],
+    buyers: [],
+    payments: [],
+    expenses: [],
+    schedule: [],
+    audit: [],
   };
 }

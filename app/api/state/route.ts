@@ -1,6 +1,72 @@
-import {stateSchema} from '../../validate';
-import {migratePlan} from '../../migrate-plan';
-import { env } from 'cloudflare:workers';
-import { getChatGPTUser } from '../../chatgpt-auth';
-export async function GET(){const u=await getChatGPTUser();if(!u)return Response.json({error:'Sign in to access your estate.'},{status:401});const row=await env.DB!.prepare('SELECT data,version FROM estates WHERE owner=?').bind(u.userId).first<{data:string,version:number}>();return Response.json(row?{data:migratePlan(JSON.parse(row.data)),version:row.version}:{data:null,version:0});}
-export async function PUT(req:Request){const u=await getChatGPTUser();if(!u)return Response.json({error:'Sign in required.'},{status:401});try{const {data,version}:any=await req.json();if(!Number.isInteger(version)||!data||!Array.isArray(data.plots)||data.plots.length>5000||!['buyers','payments','expenses','schedule','audit'].every(k=>Array.isArray(data[k]))||JSON.stringify(data).length>4000000)return Response.json({error:'Invalid data.'},{status:400});const valid=stateSchema.safeParse(data);if(!valid.success)return Response.json({error:valid.error.issues[0]?.message||'Invalid records'},{status:400});const current=migratePlan(valid.data);if(data.payments.some((p:any)=>!Number.isFinite(p.amount)||p.amount<=0)||data.plots.some((p:any)=>!Number.isFinite(p.price)||p.price<0))return Response.json({error:'Invalid amount.'},{status:400});await env.DB!.prepare('INSERT OR IGNORE INTO estates(owner,data,version) VALUES(?,?,0)').bind(u.userId,JSON.stringify(current)).run();const result=await env.DB!.prepare('UPDATE estates SET data=?,version=version+1 WHERE owner=? AND version=?').bind(JSON.stringify(current),u.userId,version).run();if(!result.meta.changes)return Response.json({error:'Data changed in another window. Reload before editing.'},{status:409});return Response.json({version:version+1});}catch{return Response.json({error:'Could not save. Please try again.'},{status:500});}}
+import { z } from 'zod';
+import { getCurrentUser } from '@/lib/auth';
+import { jsonError, readJson } from '@/lib/http';
+import { collections, isDuplicateKeyError } from '@/lib/mongodb';
+import { migratePlan } from '../../migrate-plan';
+import { stateSchema } from '../../validate';
+
+const MAX_BODY_CHARS = 4_000_000;
+const CONFLICT_MESSAGE = 'Data changed in another window. Reload before editing.';
+
+const saveSchema = z.object({
+  version: z.number().int().nonnegative(),
+  data: stateSchema,
+});
+
+/** Load the signed-in user's estate. `data: null` means they haven't saved anything yet. */
+export async function GET() {
+  try {
+    const user = await getCurrentUser();
+    if (!user) return jsonError(401, 'Sign in to access your estate.');
+
+    const { estates } = await collections();
+    const estate = await estates.findOne({ _id: user.id });
+    return Response.json(
+      estate
+        ? { data: migratePlan(estate.data), version: estate.version }
+        : { data: null, version: 0 },
+    );
+  } catch (error) {
+    console.error('Loading estate failed:', error);
+    return jsonError(500, 'Could not load your estate. Please try again.');
+  }
+}
+
+/**
+ * Save the whole estate. The client sends the version it loaded; the save only succeeds if the
+ * stored version still matches, so two open windows can't silently overwrite each other.
+ */
+export async function PUT(req: Request) {
+  try {
+    const user = await getCurrentUser();
+    if (!user) return jsonError(401, 'Sign in required.');
+
+    const body = await readJson(req, MAX_BODY_CHARS);
+    if (!body.ok) return body.response;
+
+    const parsed = saveSchema.safeParse(body.value);
+    if (!parsed.success) {
+      return jsonError(400, parsed.error.issues[0]?.message ?? 'Invalid records.');
+    }
+    const { version } = parsed.data;
+    const data = migratePlan(parsed.data.data);
+    const updatedAt = new Date();
+    const { estates } = await collections();
+
+    if (version === 0) {
+      // First save: create the estate. Fails with a duplicate key if another window got there first.
+      await estates.insertOne({ _id: user.id, data, version: 1, updatedAt });
+    } else {
+      const result = await estates.updateOne(
+        { _id: user.id, version },
+        { $set: { data, updatedAt }, $inc: { version: 1 } },
+      );
+      if (result.matchedCount === 0) return jsonError(409, CONFLICT_MESSAGE);
+    }
+    return Response.json({ version: version + 1 });
+  } catch (error) {
+    if (isDuplicateKeyError(error)) return jsonError(409, CONFLICT_MESSAGE);
+    console.error('Saving estate failed:', error);
+    return jsonError(500, 'Could not save. Please try again.');
+  }
+}

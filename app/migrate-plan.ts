@@ -8,15 +8,18 @@ export function migratePlan(data: EstateState): EstateState {
   return {
     ...data,
     planVersion: PLAN_VERSION,
-    plots: data.plots.map(plot => {
-      const plan = planPlots.find(p => p.id === plot.id);
+    plots: data.plots.map((plot) => {
+      const plan = planPlots.find((p) => p.id === plot.id);
       if (!plan || plot.verified) return plot;
       const legacyMarla = plot.id === 47 ? 5 : plan.marla;
       const untouched = plot.marla === legacyMarla && plot.dimensions === plan.dimensions;
       if (!untouched) return plot;
-      const notes = plot.notes === 'Imported from photographed plan; verify dimensions and area.'
-        ? [PLAN_IMPORT_NOTE, plan.note].filter(Boolean).join(' ')
-        : plan.note && !plot.notes.includes(plan.note) ? [plot.notes, plan.note].filter(Boolean).join(' ') : plot.notes;
+      const notes =
+        plot.notes === 'Imported from photographed plan; verify dimensions and area.'
+          ? [PLAN_IMPORT_NOTE, plan.note].filter(Boolean).join(' ')
+          : plan.note && !plot.notes.includes(plan.note)
+            ? [plot.notes, plan.note].filter(Boolean).join(' ')
+            : plot.notes;
       return { ...plot, marla: plan.marla, dimensions: plan.dimensions, notes };
     }),
   };
